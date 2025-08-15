@@ -87,29 +87,24 @@ class CLIPDynamicClassifierBaseline(nn.Module):
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07), requires_grad=False)
 
-        # self.text_encoder = TextEncoder(clip_model)
-        # weight_list = []
-        # with torch.no_grad():
-        #     print('build clip text emb tmp')
-        #     for pred_txt in tqdm(self.rel_classes): # N_p
-        #         weight_list_rel = []
-        #         obj_classes = self.obj_classes
+        self.text_encoder = TextEncoder(clip_model)
+        weight_list = []
+        with torch.no_grad():
+            print('build clip text emb tmp')
+            for pred_txt in tqdm(self.rel_classes): # N_p
+                weight_list_rel = []
+                obj_classes = self.obj_classes
 
-        #         for ent_text in obj_classes: # N_p
-        #             trp_templete_w, trp_templete_txt  = build_baseline_text_embedding(
-        #             f"{ent_text} {pred_txt} something", 
-        #                 templates=simple_reduced_templates, text_model=self.text_encoder
-        #             )
-        #             trp_templete_w = trp_templete_w / trp_templete_w.norm(dim=-1, keepdim=True)
-        #             weight_list_rel.append(trp_templete_w)
-        #         # trp_templete_w_collect = torch.cat(trp_templete_w_collect, dim=0)
-        #         weight_list.append(torch.stack(weight_list_rel))
+                for ent_text in obj_classes: # N_p
+                    trp_templete_w, trp_templete_txt  = build_baseline_text_embedding(
+                    f"{ent_text} {pred_txt} something", 
+                        templates=simple_reduced_templates, text_model=self.text_encoder
+                    )
+                    trp_templete_w = trp_templete_w / trp_templete_w.norm(dim=-1, keepdim=True)
+                    weight_list_rel.append(trp_templete_w)
+                # trp_templete_w_collect = torch.cat(trp_templete_w_collect, dim=0)
+                weight_list.append(torch.stack(weight_list_rel))
 
-        # torch.save(weight_list, '/public/home/v-liutao/HOI/VS3_CVPR23/weight_list_51.pt')
-        # num=51
-        # weight_list = torch.load('/public/home/v-liutao/HOI/VS3_CVPR23/weight_list.pt')
-        # num=50
-        weight_list = torch.load('/public/home/v-liutao/HOI/VS3_CVPR23/weight_list_51.pt')
 
         self.classifier_cache = nn.ParameterDict()
         self.classifier_cache['cls_weight'] = nn.Parameter(torch.stack(weight_list), requires_grad=False) # Num_pred * num_ent^2 * hdim
