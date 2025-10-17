@@ -10,10 +10,10 @@ timm
 gradio>=4.0.0
 # Object Detection and Tracking Requirements
 opencv-python>=4.8.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0
 ultralytics>=8.0.0
 PyYAML>=6.0
-faiss-gpu>=1.7.4
+faiss-gpu>=1.7.2
 # RAHP Scene Graphs Requirements
 einops
 shapely
