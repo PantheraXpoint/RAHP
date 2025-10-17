@@ -1,0 +1,92 @@
+# Symbolic links
+DATASET/VG150/VG_100K
+DATASET/coco/train2017
+DATASET/coco/annotations
+
+# Model weights and checkpoints
+MODEL/*.pth
+MODEL/*.pkl
+MODEL/*.ckpt
+MODEL/*.bin
+*.pth
+*.pkl
+*.ckpt
+*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch
+*.pth
+*.pt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+tensorboard_logs/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Data files (large datasets)
+*.h5
+*.hdf5
+*.json
+*.zip
+*.tar.gz
+*.tar.bz2
+
+# Cache
+.cache/
+cache/

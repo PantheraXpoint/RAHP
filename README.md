@@ -27,8 +27,34 @@ wget https://penzhanwu2bbs.blob.core.windows.net/data/GLIPv1_Open/models/glip_la
 
 ## Dataset Preparation
 
+### Symbolic Links Setup
+
+This repository uses symbolic links to avoid duplicating large dataset files. The following symbolic links are expected to be set up:
+
+1. **Visual Genome Dataset**:
+   ```bash
+   # Link VG_100K images to the actual dataset location
+   ln -s /ssd2/datasets/VG150/VG_100K /home/quang/sensys/new/RAHP/DATASET/VG150/VG_100K
+   ```
+
+2. **COCO Dataset**:
+   ```bash
+   # Link COCO train2017 images and annotations
+   ln -s /ssd0/datasets/COCO/images/train2017 /home/quang/sensys/new/RAHP/DATASET/coco/train2017
+   ln -s /ssd0/datasets/COCO/rahp/annotations /home/quang/sensys/new/RAHP/DATASET/coco/annotations
+   ```
+
+**Note**: Adjust the source paths (`/ssd2/datasets/VG150/VG_100K`, `/ssd0/datasets/COCO/...`) according to your actual dataset locations.
+
+### Dataset Downloads
+
 1. Visual Genome
-* ``Visual Genome (VG)``: Download the original [VG](https://visualgenome.org/) data into ``DATASET/VG150`` folder. Refer to [vg_prepare](https://github.com/KaihuaTang/Scene-Graph-Benchmark.pytorch/blob/master/DATASET.md).
+* ``Visual Genome (VG)``: Download the following files into ``DATASET/VG150`` folder:
+  - **VG_100K images**: Download from [Visual Genome API](https://homes.cs.washington.edu/~ranjay/visualgenome/api.html)
+  - **image_data.json**: Download from [image_data.json.zip](https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/image_data.json.zip)
+  - **region_descriptions.json**: Download from [region_descriptions.json.zip](https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/region_descriptions.json.zip)
+  - **VG-SGG-with-attri.h5**: Download from [Hugging Face](https://huggingface.co/datasets/kb-kim/LLM4SGG/resolve/main/VG-SGG-with-attri.h5)
+  - **VG-SGG-dicts-with-attri.json**: Download from [GitHub](https://github.com/KaihuaTang/Scene-Graph-Benchmark.pytorch/blob/master/datasets/vg/VG-SGG-dicts-with-attri.json)
 
 2. Openimage V6
 * ``Openimage V6``: 

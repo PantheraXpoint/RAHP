@@ -1,0 +1,29 @@
+# AVAS Baseline Requirements
+LMDeploy
+opencv-python
+bert_score
+coloredlogs
+json_repair
+qwen-vl-utils
+scikit-learn
+timm
+gradio>=4.0.0
+# Object Detection and Tracking Requirements
+opencv-python>=4.8.0
+numpy>=1.24.0
+ultralytics>=8.0.0
+PyYAML>=6.0
+faiss-gpu>=1.7.4
+# RAHP Scene Graphs Requirements
+einops
+shapely
+timm
+yacs
+tensorboardX
+ftfy
+prettytable
+pymongo 
+transformers
+openai
+SceneGraphParser
+spacy 
