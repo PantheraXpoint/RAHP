@@ -1,186 +1,198 @@
-// Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
-// This file is modified from  https://github.com/pytorch/pytorch/blob/master/modules/detectron/sigmoid_focal_loss_op.cu
+// Copyright (c) Facebook, Inc.
+// Modernized to remove THC and use ATen/c10 CUDA APIs.
+// Based on: https://github.com/pytorch/pytorch/blob/master/modules/detectron/sigmoid_focal_loss_op.cu
+
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/ceil_div.h>
 
-#include <THC/THC.h>
-#include <THC/THCAtomics.cuh>
-#include <THC/THCDeviceUtils.cuh>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAException.h>  // C10_CUDA_CHECK
 
 #include <cfloat>
+#include <algorithm>  // std::min
 
 // TODO make it in a common file
 #define CUDA_1D_KERNEL_LOOP(i, n)                            \
   for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; \
        i += blockDim.x * gridDim.x)
 
-
 template <typename T>
-__global__ void SigmoidFocalLossForward(const int nthreads, 
-    const T* logits,
-    const int* targets,
-    const int num_classes,
-    const float gamma, 
-    const float alpha,
-    const int num, 
-    T* losses) {
+__global__ void SigmoidFocalLossForward(const int nthreads,
+                                        const T* logits,
+                                        const int* targets,
+                                        const int num_classes,
+                                        const float gamma,
+                                        const float alpha,
+                                        const int /*num*/,
+                                        T* losses) {
   CUDA_1D_KERNEL_LOOP(i, nthreads) {
+    const int n = i / num_classes;
+    const int d = i % num_classes;        // current class [0..num_classes-1]
+    const int t = targets[n];             // target class [1..num_classes], 0 is bg
 
-    int n = i / num_classes;
-    int d = i % num_classes; // current class[0~79]; 
-    int t = targets[n]; // target class [1~80];
+    // Decide positive or negative
+    const T c1 = (t == (d + 1)) ? T(1) : T(0);
+    const T c2 = ((t >= 0) && (t != (d + 1))) ? T(1) : T(0);
 
-    // Decide it is positive or negative case. 
-    T c1 = (t == (d+1)); 
-    T c2 = (t>=0 & t != (d+1));
+    const T zp = static_cast<T>(alpha);
+    const T zn = static_cast<T>(1.0f - alpha);
 
-    T zn = (1.0 - alpha);
-    T zp = (alpha);
+    // p = sigmoid(x) = 1/(1+exp(-x)) ; use T overloads (float/double)
+    const T x = logits[i];
+    const T p = T(1) / (T(1) + exp(-x));
 
-    // p = 1. / 1. + expf(-x); p = sigmoid(x)
-    T  p = 1. / (1. + expf(-logits[i]));
+    // (1-p)^gamma * log(p) ; guard log with small eps to avoid -inf/NaN
+    const T eps = T(1e-12);
+    const T term1 = pow(max(T(1) - p, T(0)), T(gamma)) * log(max(p, eps));
 
-    // (1-p)**gamma * log(p) where
-    T term1 = powf((1. - p), gamma) * logf(max(p, FLT_MIN));
+    // p^gamma * log(1-p) using numerically-stable log1p form:
+    // log(1 - p) = -x if x >= 0 else log1p(-exp(x)) etc.
+    // Use the common stable expression from original code:
+    const T stable = (-x) * (x >= T(0)) - log(T(1) + exp(x - T(2) * x * (x >= T(0))));
+    const T term2 = pow(max(p, T(0)), T(gamma)) * stable;
 
-    // p**gamma * log(1-p)
-    T term2 = powf(p, gamma) *
-            (-1. * logits[i] * (logits[i] >= 0) -   
-             logf(1. + expf(logits[i] - 2. * logits[i] * (logits[i] >= 0))));
-
-    losses[i] = 0.0;
+    losses[i] = T(0);
     losses[i] += -c1 * term1 * zp;
     losses[i] += -c2 * term2 * zn;
-
-  } // CUDA_1D_KERNEL_LOOP
-} // SigmoidFocalLossForward
-
+  }
+}
 
 template <typename T>
 __global__ void SigmoidFocalLossBackward(const int nthreads,
-                const T* logits,
-                const int* targets,
-                const T* d_losses,
-                const int num_classes,
-                const float gamma,
-                const float alpha,
-                const int num,
-                T* d_logits) {
+                                         const T* logits,
+                                         const int* targets,
+                                         const T* d_losses,
+                                         const int num_classes,
+                                         const float gamma,
+                                         const float alpha,
+                                         const int /*num*/,
+                                         T* d_logits) {
   CUDA_1D_KERNEL_LOOP(i, nthreads) {
+    const int n = i / num_classes;
+    const int d = i % num_classes;        // current class
+    const int t = targets[n];             // target class
 
-    int n = i / num_classes;
-    int d = i % num_classes; // current class[0~79]; 
-    int t = targets[n]; // target class [1~80], 0 is background;
+    // Decide positive or negative
+    const T c1 = (t == (d + 1)) ? T(1) : T(0);
+    const T c2 = ((t >= 0) && (t != (d + 1))) ? T(1) : T(0);
 
-    // Decide it is positive or negative case. 
-    T c1 = (t == (d+1));
-    T c2 = (t>=0 & t != (d+1));
+    const T zp = static_cast<T>(alpha);
+    const T zn = static_cast<T>(1.0f - alpha);
 
-    T zn = (1.0 - alpha);
-    T zp = (alpha);
-    // p = 1. / 1. + expf(-x); p = sigmoid(x)
-    T  p = 1. / (1. + expf(-logits[i]));
+    const T x = logits[i];
+    const T p = T(1) / (T(1) + exp(-x));
 
-    // (1-p)**g * (1 - p - g*p*log(p)
-    T term1 = powf((1. - p), gamma) *
-                      (1. - p - (p * gamma * logf(max(p, FLT_MIN))));
+    const T eps = T(1e-12);
 
-    // (p**g) * (g*(1-p)*log(1-p) - p)
-    T term2 = powf(p, gamma) *
-                  ((-1. * logits[i] * (logits[i] >= 0) -
-                      logf(1. + expf(logits[i] - 2. * logits[i] * (logits[i] >= 0)))) *
-                      (1. - p) * gamma - p);
-    d_logits[i] = 0.0;
-    d_logits[i] += -c1 * term1 * zp;
-    d_logits[i] += -c2 * term2 * zn;
-    d_logits[i] = d_logits[i] * d_losses[i];
+    // (1-p)^g * (1 - p - g*p*log(p))
+    const T term1 =
+        pow(max(T(1) - p, T(0)), T(gamma)) *
+        (T(1) - p - (p * T(gamma) * log(max(p, eps))));
 
-  } // CUDA_1D_KERNEL_LOOP
-} // SigmoidFocalLossBackward
+    // p^g * ( g*(1-p)*log(1-p) - p )
+    const T stable = (-x) * (x >= T(0)) - log(T(1) + exp(x - T(2) * x * (x >= T(0))));
+    const T term2 =
+        pow(max(p, T(0)), T(gamma)) * (stable * (T(1) - p) * T(gamma) - p);
 
+    T g = T(0);
+    g += -c1 * term1 * zp;
+    g += -c2 * term2 * zn;
 
-at::Tensor SigmoidFocalLoss_forward_cuda(
-		const at::Tensor& logits,
-                const at::Tensor& targets,
-		const int num_classes, 
-		const float gamma, 
-		const float alpha) {
-  AT_ASSERTM(logits.device().is_cuda(), "logits must be a CUDA tensor");
-  AT_ASSERTM(targets.device().is_cuda(), "targets must be a CUDA tensor");
-  AT_ASSERTM(logits.dim() == 2, "logits should be NxClass");
+    d_logits[i] = g * d_losses[i];
+  }
+}
 
-  const int num_samples = logits.size(0);
-	
+// Forward wrapper
+at::Tensor SigmoidFocalLoss_forward_cuda(const at::Tensor& logits,
+                                         const at::Tensor& targets,
+                                         const int num_classes,
+                                         const float gamma,
+                                         const float alpha) {
+  TORCH_CHECK(logits.is_cuda(),  "logits must be a CUDA tensor");
+  TORCH_CHECK(targets.is_cuda(), "targets must be a CUDA tensor");
+  TORCH_CHECK(logits.dim() == 2, "logits should be NxClass");
+  TORCH_CHECK(logits.size(1) == num_classes,
+              "logits.size(1) (", logits.size(1), ") must equal num_classes (", num_classes, ")");
+
+  const int num_samples = static_cast<int>(logits.size(0));
   auto losses = at::empty({num_samples, logits.size(1)}, logits.options());
-  auto losses_size = num_samples * logits.size(1);
-  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  const int64_t losses_size = static_cast<int64_t>(num_samples) * logits.size(1);
 
-  dim3 grid(std::min(THCCeilDiv(losses_size, 512L), 4096L));
+  c10::cuda::CUDAGuard device_guard(logits.device());
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
+
+  const int blocks = static_cast<int>(std::min<int64_t>(
+      at::ceil_div(losses_size, static_cast<int64_t>(512)),
+      static_cast<int64_t>(4096)));
+  dim3 grid(blocks);
   dim3 block(512);
 
   if (losses.numel() == 0) {
-    THCudaCheck(cudaGetLastError());
+    C10_CUDA_CHECK(cudaGetLastError());
     return losses;
   }
 
   AT_DISPATCH_FLOATING_TYPES(logits.scalar_type(), "SigmoidFocalLoss_forward", [&] {
     SigmoidFocalLossForward<scalar_t><<<grid, block, 0, stream>>>(
-         losses_size,
-         logits.contiguous().data_ptr<scalar_t>(),
-	 targets.contiguous().data_ptr<int>(),
-         num_classes,
-	 gamma,
-	 alpha,
-	 num_samples,
-         losses.data_ptr<scalar_t>());
+        static_cast<int>(losses_size),
+        logits.contiguous().data_ptr<scalar_t>(),
+        targets.contiguous().data_ptr<int>(),
+        num_classes,
+        gamma,
+        alpha,
+        num_samples,
+        losses.data_ptr<scalar_t>());
   });
-  THCudaCheck(cudaGetLastError());
-  return losses;   
-}	
+  C10_CUDA_CHECK(cudaGetLastError());
+  return losses;
+}
 
+// Backward wrapper
+at::Tensor SigmoidFocalLoss_backward_cuda(const at::Tensor& logits,
+                                          const at::Tensor& targets,
+                                          const at::Tensor& d_losses,
+                                          const int num_classes,
+                                          const float gamma,
+                                          const float alpha) {
+  TORCH_CHECK(logits.is_cuda(),   "logits must be a CUDA tensor");
+  TORCH_CHECK(targets.is_cuda(),  "targets must be a CUDA tensor");
+  TORCH_CHECK(d_losses.is_cuda(), "d_losses must be a CUDA tensor");
+  TORCH_CHECK(logits.dim() == 2,  "logits should be NxClass");
+  TORCH_CHECK(logits.size(1) == num_classes,
+              "logits.size(1) (", logits.size(1), ") must equal num_classes (", num_classes, ")");
 
-at::Tensor SigmoidFocalLoss_backward_cuda(
-		const at::Tensor& logits,
-                const at::Tensor& targets,
-		const at::Tensor& d_losses,
-		const int num_classes, 
-		const float gamma, 
-		const float alpha) {
-  AT_ASSERTM(logits.device().is_cuda(), "logits must be a CUDA tensor");
-  AT_ASSERTM(targets.device().is_cuda(), "targets must be a CUDA tensor");
-  AT_ASSERTM(d_losses.device().is_cuda(), "d_losses must be a CUDA tensor");
-
-  AT_ASSERTM(logits.dim() == 2, "logits should be NxClass");
-
-  const int num_samples = logits.size(0);
-  AT_ASSERTM(logits.size(1) == num_classes, "logits.size(1) should be num_classes");
-	
+  const int num_samples = static_cast<int>(logits.size(0));
   auto d_logits = at::zeros({num_samples, num_classes}, logits.options());
-  auto d_logits_size = num_samples * logits.size(1);
-  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  const int64_t d_logits_size = static_cast<int64_t>(num_samples) * num_classes;
 
-  dim3 grid(std::min(THCCeilDiv(d_logits_size, 512L), 4096L));
+  c10::cuda::CUDAGuard device_guard(logits.device());
+  cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
+
+  const int blocks = static_cast<int>(std::min<int64_t>(
+      at::ceil_div(d_logits_size, static_cast<int64_t>(512)),
+      static_cast<int64_t>(4096)));
+  dim3 grid(blocks);
   dim3 block(512);
 
   if (d_logits.numel() == 0) {
-    THCudaCheck(cudaGetLastError());
+    C10_CUDA_CHECK(cudaGetLastError());
     return d_logits;
   }
 
   AT_DISPATCH_FLOATING_TYPES(logits.scalar_type(), "SigmoidFocalLoss_backward", [&] {
     SigmoidFocalLossBackward<scalar_t><<<grid, block, 0, stream>>>(
-         d_logits_size,
-         logits.contiguous().data_ptr<scalar_t>(),
-	 targets.contiguous().data_ptr<int>(),
-	 d_losses.contiguous().data_ptr<scalar_t>(),
-         num_classes,
-	 gamma,
-	 alpha,
-	 num_samples,
-         d_logits.data_ptr<scalar_t>());
+        static_cast<int>(d_logits_size),
+        logits.contiguous().data_ptr<scalar_t>(),
+        targets.contiguous().data_ptr<int>(),
+        d_losses.contiguous().data_ptr<scalar_t>(),
+        num_classes,
+        gamma,
+        alpha,
+        num_samples,
+        d_logits.data_ptr<scalar_t>());
   });
-
-  THCudaCheck(cudaGetLastError());
-  return d_logits;   
-}	
-
+  C10_CUDA_CHECK(cudaGetLastError());
+  return d_logits;
+}
