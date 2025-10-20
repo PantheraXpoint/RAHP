@@ -14,6 +14,13 @@ MODEL:
     DETECTIONS_PER_IMG: 36
     NMS_TH: 0.5
   DYHEAD:
+    OV:
+      ENABLED: True
+      CLIP_FEAT_DISTILLATION: True  # Add this - makes it enter the if block
+      DYNAMIC_CLIP_CLASSIFIER: True  # Keep as True to enter the block
+      FEAT_DISTILLATION_MODEL: 'clip'
+      DATASET_NAME: 'VG'
+      USE_ADAPTER_LAYER: False  # Disable adapter since we're testing
     NUM_CLASSES: 151
     SCORE_AGG: "MEAN"
     RELATION_CONSISTENCY_ON: True

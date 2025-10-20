@@ -6,26 +6,83 @@ Our paper ["Relation-aware Hierarchical Prompt for Open-vocabulary Scene Graph G
 
 ## Installation and Setup
 
-***Environment.***
-This repo requires Pytorch>=1.9 and torchvision.
-
-Then install the following packages:
 ```
-pip install einops shapely timm yacs tensorboardX ftfy prettytable pymongo 
-pip install transformers openai
-pip install SceneGraphParser spacy 
+pip install -r requirements.txt
+
+# follow this page https://stackoverflow.com/questions/72988735/replacing-thc-thc-h-module-to-aten-aten-h-module
+export TORCH_CUDA_ARCH_LIST="8.6"
 python setup.py build develop --user
+
+pip uninstall -y opencv opencv-python opencv-contrib-python \
+  opencv-python-headless opencv-contrib-python-headless
+rm -rf /usr/local/lib/python3.10/dist-packages/cv2 \
+       /usr/local/lib/python3.10/dist-packages/opencv*dist-info 2>/dev/null || true
+       
+pip install --no-deps --no-cache-dir opencv-python-headless==4.10.0.84
+pip install "git+https://github.com/openai/CLIP.git"
+pip install google-generativeai
 ```
 
 ***Pre-trained Visual-Semantic Space.*** Download the pre-trained `GLIP-T` and `GLIP-L` [checkpoints](https://github.com/microsoft/GLIP#model-zoo) into the ``MODEL`` folder. 
 (!! GLIP has updated the downloading paths, please find these checkpoints following https://github.com/microsoft/GLIP#model-zoo)
 ```
 mkdir MODEL
-wget https://penzhanwu2bbs.blob.core.windows.net/data/GLIPv1_Open/models/glip_tiny_model_o365_goldg_cc_sbu.pth -O swin_tiny_patch4_window7_224.pth
-wget https://penzhanwu2bbs.blob.core.windows.net/data/GLIPv1_Open/models/glip_large_model.pth -O swin_large_patch4_window12_384_22k.pth
+wget https://huggingface.co/GLIPModel/GLIP/resolve/main/glip_tiny_model_o365_goldg_cc_sbu.pth -O MODEL/glip_tiny_model_o365_goldg_cc_sbu.pth
+wget https://huggingface.co/GLIPModel/GLIP/blob/main/glip_large_model.pth -O MODEL/glip_large_model.pth
+
+# Download VLM (Qwen2.5-14B-Instruct-AWQ)
+export HF_ENDPOINT=https://hf-mirror.com
+huggingface-cli download Qwen/Qwen2.5-14B-Instruct-AWQ
 ```
 
 ## Dataset Preparation
+
+### Docker Container Setup
+
+This repository can be run in a Docker container with proper volume mounts to access datasets. The following setup ensures all symbolic links work correctly inside the container.
+
+#### **Container Creation**
+
+Create and run the container with the following command:
+
+```bash
+docker run -it --name avas-sgg --gpus all --runtime=nvidia \
+  -v /home/quang/sensys/new/RAHP/:/RAHP \
+  -v /ssd2/datasets/:/ssd2/datasets \
+  -v /ssd0/datasets:/ssd0/datasets \
+  -e DATASET=/RAHP/DATASET \
+  -w /RAHP \
+  --network host \
+  -u 0:0 \
+  nvcr.io/nvidia/pytorch:24.10-py3
+```
+
+**Volume Mounts Explained:**
+- `/home/quang/sensys/new/RAHP/:/RAHP` - Mounts the codebase
+- `/ssd2/datasets/:/ssd2/datasets` - Mounts VG150 dataset (preserves absolute paths)
+- `/ssd0/datasets:/ssd0/datasets` - Mounts COCO dataset (preserves absolute paths)
+- `-e DATASET=/RAHP/DATASET` - Sets environment variable for path resolution
+- `-w /RAHP` - Sets working directory inside container
+
+#### **Verification Inside Container**
+
+After starting the container, verify the setup:
+
+```bash
+# Check environment variable
+echo $DATASET
+
+# Verify symbolic links are working
+ls -la /RAHP/DATASET/coco/
+ls -la /RAHP/DATASET/VG150/
+
+# Test path resolution
+python3 -c "
+from maskrcnn_benchmark.config.paths_catalog import try_to_find
+print('VG150 path:', try_to_find('VG150/VG_100K'))
+print('COCO path:', try_to_find('coco/train2017'))
+"
+```
 
 ### Symbolic Links Setup
 
@@ -40,11 +97,53 @@ This repository uses symbolic links to avoid duplicating large dataset files. Th
 2. **COCO Dataset**:
    ```bash
    # Link COCO train2017 images and annotations
-   ln -s /ssd0/datasets/COCO/images/train2017 /home/quang/sensys/new/RAHP/DATASET/coco/train2017
+   ln -s /ssd0/datasets/COCO/rahp/train2017 /home/quang/sensys/new/RAHP/DATASET/coco/train2017
    ln -s /ssd0/datasets/COCO/rahp/annotations /home/quang/sensys/new/RAHP/DATASET/coco/annotations
    ```
 
-**Note**: Adjust the source paths (`/ssd2/datasets/VG150/VG_100K`, `/ssd0/datasets/COCO/...`) according to your actual dataset locations.
+**Important Notes:**
+- The symbolic links use **absolute paths** (`/ssd2/datasets/...`, `/ssd0/datasets/...`)
+- When using Docker, mount the dataset directories with the **same absolute paths** to preserve link functionality
+- Adjust the source paths according to your actual dataset locations
+- The `DATASET` environment variable helps the path resolution system find datasets correctly
+
+#### **Troubleshooting Container Issues**
+
+If you encounter issues with symbolic links in the container:
+
+1. **Check if symbolic links are broken:**
+   ```bash
+   ls -la /RAHP/DATASET/coco/
+   ls -la /RAHP/DATASET/VG150/
+   ```
+   Look for red text or `@` symbols indicating broken links.
+
+2. **Verify volume mounts:**
+   ```bash
+   ls -la /ssd2/datasets/VG150/VG_100K/ | head -5
+   ls -la /ssd0/datasets/COCO/rahp/annotations/ | head -5
+   ```
+
+3. **Test path resolution:**
+   ```bash
+   python3 -c "
+   import os
+   print('DATASET env var:', os.environ.get('DATASET'))
+   print('Current dir:', os.getcwd())
+   "
+   ```
+
+4. **Recreate symbolic links if needed:**
+   ```bash
+   # Remove broken links
+   rm /RAHP/DATASET/coco/annotations /RAHP/DATASET/coco/train2017
+   rm /RAHP/DATASET/VG150/VG_100K
+   
+   # Recreate them
+   ln -s /ssd0/datasets/COCO/rahp/annotations /RAHP/DATASET/coco/annotations
+   ln -s /ssd0/datasets/COCO/rahp/train2017 /RAHP/DATASET/coco/train2017
+   ln -s /ssd2/datasets/VG150/VG_100K /RAHP/DATASET/VG150/VG_100K
+   ```
 
 ### Dataset Downloads
 
@@ -53,6 +152,7 @@ This repository uses symbolic links to avoid duplicating large dataset files. Th
   - **VG_100K images**: Download from [Visual Genome API](https://homes.cs.washington.edu/~ranjay/visualgenome/api.html)
   - **image_data.json**: Download from [image_data.json.zip](https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/image_data.json.zip)
   - **region_descriptions.json**: Download from [region_descriptions.json.zip](https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/region_descriptions.json.zip)
+  - **relationship_alias.txt**: Download from [relationship_alias.txt](https://homes.cs.washington.edu/~ranjay/visualgenome/data/dataset/relationship_alias.txt)
   - **VG-SGG-with-attri.h5**: Download from [Hugging Face](https://huggingface.co/datasets/kb-kim/LLM4SGG/resolve/main/VG-SGG-with-attri.h5)
   - **VG-SGG-dicts-with-attri.json**: Download from [GitHub](https://github.com/KaihuaTang/Scene-Graph-Benchmark.pytorch/blob/master/datasets/vg/VG-SGG-dicts-with-attri.json)
 
@@ -91,26 +191,28 @@ Please refer to [tools/cleaned_split_GLIPunseen.ipynb](tools/cleaned_split_GLIPu
 
 ### **Relation-Aware & Entity-Aware Prompt Generation Guide**
 
-To generate relation-aware prompts and entity-aware prompts, please follow these three steps sequentially:
+Follow these steps to create high-quality prompts driven by dataset-specific predicate superclasses.
 
-#### **Step 1: Cluster Entity Types into Superclasses**
+#### **Step 1: Cluster predicates into superclasses (dataset-specific)**
 ```bash
 cd tools
 python cluster_entity_2_super_class.py
 ```
-*This will group entity types into hierarchical superclasses.*
+- Goal: Cluster the predicates in your chosen dataset into groups.
+- Expectation: The number of clusters ideally equals the number of predicate superclasses you want to use later.
 
-#### **Step 2: Validate Superclass Clustering**
+#### **Step 2: Generate superclass names and validate uniqueness**
 ```bash
 python check_super_entity_class.py
 ```
-*Verifies the quality of generated superclasses before prompt generation.*
+- Purpose: For each cluster from Step 1, generate a concise superclass name and validate the count.
+- Validation rule: On each round, if the generated superclass name already exists from a previous round, treat it as invalid and regenerate until all superclass names are unique (and the count matches the clusters).
 
-#### **Step 3: Generate Relation-Aware Prompts**
+#### **Step 3: Generate relation-aware prompts using the superclasses**
 ```bash
 python relation_aware_prompt_generation.py
 ```
-*Produces final prompts incorporating both entity hierarchies and relation contexts.*
+- This uses the validated superclass names from Step 2 to produce relation-aware prompts that incorporate both entity hierarchies and relation contexts.
 
 
 
