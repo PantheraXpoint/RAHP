@@ -237,7 +237,8 @@ def create_queries_and_maps(labels, label_list, additional_labels = None, cfg = 
     from transformers import AutoTokenizer
     # tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
     if cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE == "bert-base-uncased":
-        tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", local_files_only=cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_LOCAL_FILES_ONLY)
+        tokenizer_path = cfg.MODEL.LANGUAGE_BACKBONE.MODEL_DIR if cfg.MODEL.LANGUAGE_BACKBONE.MODEL_DIR else "bert-base-uncased"
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_LOCAL_FILES_ONLY)
         tokenized = tokenizer(objects_query, return_tensors="pt")
     elif cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE == "clip":
         from transformers import CLIPTokenizerFast

@@ -408,7 +408,8 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, num_replicas=None
         else:
             extra_args["tokenizer"] = CLIPTokenizerFast.from_pretrained("openai/clip-vit-base-patch32", from_slow=True)
     else:
-        extra_args['tokenizer'] = AutoTokenizer.from_pretrained(cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE, local_files_only=cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_LOCAL_FILES_ONLY)
+        tokenizer_path = cfg.MODEL.LANGUAGE_BACKBONE.MODEL_DIR if cfg.MODEL.LANGUAGE_BACKBONE.MODEL_DIR else cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_TYPE
+        extra_args['tokenizer'] = AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_LOCAL_FILES_ONLY)
 
     if isinstance(dataset_list[0], (tuple, list)):
         datasets = build_dataset_by_group(dataset_list, transforms, DatasetCatalog, is_train,

@@ -539,7 +539,8 @@ class ATSSLossComputation(torch.nn.Module):
                 self.tokenizer = CLIPTokenizerFast.from_pretrained("openai/clip-vit-base-patch32",
                                                                             from_slow=True)
         else:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.lang, local_files_only=cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_LOCAL_FILES_ONLY)
+            lang_model_path = cfg.MODEL.LANGUAGE_BACKBONE.MODEL_DIR if cfg.MODEL.LANGUAGE_BACKBONE.MODEL_DIR else self.lang
+            self.tokenizer = AutoTokenizer.from_pretrained(lang_model_path, local_files_only=cfg.MODEL.LANGUAGE_BACKBONE.TOKENIZER_LOCAL_FILES_ONLY)
 
         # if use shallow contrastive loss
         if self.cfg.MODEL.DYHEAD.FUSE_CONFIG.USE_SHALLOW_CONTRASTIVE_LOSS \

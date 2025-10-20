@@ -13,7 +13,7 @@ from torch import nn
 import numpy as np
 from tqdm import tqdm
 
-from ..clip_utils import build_one_text_embedding, build_text_embedding, reduced_templates, TextEncoder
+from ..clip_utils import build_one_text_embedding, build_text_embedding, reduced_templates
 
 # Following "Towards Open-vocabulary Scene Graph Generation with Prompt-based Finetuning"
 VG150_BASE_OBJ_CATEGORIES = {
@@ -29,13 +29,13 @@ VG150_BASE_OBJ_CATEGORIES = {
     'body Part': ['ear', 'eye', 'face', 'hair', 'hand', 'head', 'leg', 'mouth', 'neck', 'nose', 'paw', 'tail', 'arm', 'finger']
 }
 BASIC_OBJ_CLASS = list(VG150_BASE_OBJ_CATEGORIES.keys())
-TOTAL_TRIPLET = torch.load("/storage/data/v-liutao/pesudo_label/union_description_after_gpt_filter.pt")
+# TOTAL_TRIPLET = torch.load("/storage/data/v-liutao/pesudo_label/union_description_after_gpt_filter.pt")
 
 
 def load_categorical_clip_text_embedding(dataset_name):
 
     if dataset_name == 'VG':
-        with open('/public/home/v-liutao/SGG/cvpods/datasets/vg_motif_anno/vg_cate_info.json', 'r') as f:
+        with open('/RAHP/DATA/vg/vg_cate_info.json', 'r') as f:
             cate_info = json.load(f)
             obj_classes = cate_info["ent_cate"][:-1]
             rel_classes = cate_info["pred_cate"][1:]
@@ -166,7 +166,7 @@ class CLIPDynamicClassifierSimple(nn.Module):
         self.tree_type = ''
         self.mask = torch.zeros((50,10,10))
         
-        self.text_encoder = TextEncoder(clip_model)
+        self.text_encoder = TextEncoder_2(clip_model)
         entity_aware_weight_list = []
         with torch.no_grad():
             print('build clip text emb tmp')
@@ -185,7 +185,7 @@ class CLIPDynamicClassifierSimple(nn.Module):
                 entity_aware_weight_list.append(torch.stack(weight_list_rel))
 
 
-        if cfg.DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH != ''：
+        if cfg.DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH != '':
             relation_aware_weight_list = torch.load(cfg.DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH)
         else:
             raise ValueError("DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH cannot be empty")

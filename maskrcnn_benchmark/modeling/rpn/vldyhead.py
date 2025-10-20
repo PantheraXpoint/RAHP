@@ -20,7 +20,7 @@ from transformers.models.bert.modeling_bert import BertConfig, BertAttention, Be
 from transformers.modeling_utils import apply_chunking_to_forward
 import torch.utils.checkpoint as checkpoint
 import numpy as np
-import mathz
+# import mathz
 
 from maskrcnn_benchmark.modeling.language_backbone.clip_model import QuickGELU, LayerNorm, DropPath
 from timm.models.layers import DropPath, trunc_normal_
