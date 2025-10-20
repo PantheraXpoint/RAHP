@@ -62,7 +62,10 @@ vg_dataset = VG150Dataset(split='train',
                          dict_file="./DATASET/VG150/VG-SGG-dicts-with-attri.json",
                          image_file="./DATASET/VG150/image_data.json",
                          num_val_im=0, filter_empty_rels=False, filter_non_overlap=False,
-                         filter_duplicate_rels=False)
+                         filter_duplicate_rels=False,
+                         open_vocabulary_mode=False,
+                         open_predicate_mode=False,
+                         open_predicate_category=[])
 print(len(vg_dataset))
 img_ids_in_vg_train = [x['image_id'] for x in vg_dataset.img_info]
 
