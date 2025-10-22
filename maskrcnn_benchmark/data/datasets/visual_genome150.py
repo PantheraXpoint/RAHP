@@ -55,6 +55,10 @@ class VG150Dataset(torch.utils.data.Dataset):
         # # for debug
         # num_im = 100
         # num_val_im = 0
+        # ADD THIS BLOCK AT THE START:
+        # Handle None default for mutable parameter
+        if open_predicate_category is None:
+            open_predicate_category = []
 
         assert split in {'train', 'val', 'test'}
         self.train_text_input_type = train_text_input_type
@@ -94,6 +98,7 @@ class VG150Dataset(torch.utils.data.Dataset):
                     self.seen_class.append(cate_i)
 
         self.split_mask, self.gt_boxes, self.gt_classes, self.gt_attributes, self.relationships = load_graphs(
+            self,
             self.roidb_file, self.split, num_im, num_val_im=num_val_im,
             filter_empty_rels=filter_empty_rels,
             filter_non_overlap=self.filter_non_overlap,
@@ -215,7 +220,7 @@ class VG150Dataset(torch.utils.data.Dataset):
             for (o0, o1, r) in relation:
                 all_rel_sets[(o0, o1)].append(r)
             relation = [(k[0], k[1], np.random.choice(v)) for k,v in all_rel_sets.items()]
-            relation = np.array(relation, dtype=np.int32)
+            relation = np.array(relation, dtype=int)
 
         # add relation to target
         num_box = len(target)
@@ -246,8 +251,8 @@ def get_VG_statistics(img_dir, roidb_file, dict_file, image_file, must_overlap=T
                         filter_duplicate_rels=False)
     num_obj_classes = len(train_data.ind_to_classes)
     num_rel_classes = len(train_data.ind_to_predicates)
-    fg_matrix = np.zeros((num_obj_classes, num_obj_classes, num_rel_classes), dtype=np.int64)
-    bg_matrix = np.zeros((num_obj_classes, num_obj_classes), dtype=np.int64)
+    fg_matrix = np.zeros((num_obj_classes, num_obj_classes, num_rel_classes), dtype=int)
+    bg_matrix = np.zeros((num_obj_classes, num_obj_classes), dtype=int)
 
     for ex_ind in tqdm(range(len(train_data))):
         gt_classes = train_data.gt_classes[ex_ind].copy()
@@ -272,10 +277,10 @@ def box_filter(boxes, must_overlap=False):
     If no overlapping boxes, use all of them."""
     n_cands = boxes.shape[0]
 
-    overlaps = bbox_overlaps(boxes.astype(np.float), boxes.astype(np.float), to_move=0) > 0
+    overlaps = bbox_overlaps(boxes.astype(float), boxes.astype(float), to_move=0) > 0
     np.fill_diagonal(overlaps, 0)
 
-    all_possib = np.ones_like(overlaps, dtype=np.bool)
+    all_possib = np.ones_like(overlaps, dtype=bool)
     np.fill_diagonal(all_possib, 0)
 
     if must_overlap:
@@ -371,7 +376,7 @@ def load_image_filenames(img_dir, image_file):
     return fns, img_info
 
 
-def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter_non_overlap, split_key='split', keep_base_classes=False, keep_base_predicates=False):
+def load_graphs(dataset_instance, roidb_file, split, num_im, num_val_im, filter_empty_rels, filter_non_overlap, split_key='split', keep_base_classes=False, keep_base_predicates=False):
     """
     Load the file containing the GT boxes and relations, as well as the dataset split
     Parameters:
@@ -456,7 +461,7 @@ def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter
             rels = np.column_stack((obj_idx, predicates)) # (num_rel, 3), representing sub, obj, and pred
         else:
             assert not filter_empty_rels
-            rels = np.zeros((0, 3), dtype=np.int32)
+            rels = np.zeros((0, 3), dtype=int)
 
         # map to base classes
         if keep_base_classes:
@@ -500,8 +505,8 @@ def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter
             seen_rels = []
             for r in rels:
                 if split == 'train':
-                    if r[2] not in self.unseen_predicate_category:
-                        seen_rels.append([r[0], r[1], self.seen_predicate_category.index(r[2])])
+                    if r[2] not in dataset_instance.unseen_predicate_category:
+                        seen_rels.append([r[0], r[1], dataset_instance.seen_predicate_category.index(r[2])])
                         # seen_rels.append([r[0], r[1], r[2]])
             if len(seen_rels) == 0:
                 split_mask[image_index[i]] = 0

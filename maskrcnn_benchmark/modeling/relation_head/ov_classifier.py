@@ -31,6 +31,15 @@ VG150_BASE_OBJ_CATEGORIES = {
 BASIC_OBJ_CLASS = list(VG150_BASE_OBJ_CATEGORIES.keys())
 # TOTAL_TRIPLET = torch.load("/storage/data/v-liutao/pesudo_label/union_description_after_gpt_filter.pt")
 
+RAHP_SUPER_ENTITIES = [
+    'male', 'female', 'children', 'pets', 'wild animal', 'ground transport',
+    'water transport', 'air transport', 'sports equipment', 'seating furniture',
+    'decorative item', 'table', 'upper body clothing', 'lower body clothing',
+    'footwear', 'accessory', 'fruit', 'vegetable', 'prepared food', 'beverage',
+    'utensils', 'container', 'textile', 'landscape', 'urban feature', 'plant',
+    'structure', 'household item', 'head part', 'limb and appendage'
+]
+
 
 def load_categorical_clip_text_embedding(dataset_name):
 
@@ -157,77 +166,109 @@ class CLIPDynamicClassifierSimple(nn.Module):
         self.clip_model = clip_model
         self.clip_preprocess = clip_preprocess
         self.obj_classes = obj_classes
-        self.rel_classes =  rel_classes
+        self.rel_classes = rel_classes
 
         self.cos = torch.nn.CosineSimilarity(dim=0, eps=1e-6)
-
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07), requires_grad=False)
 
         self.tree_type = ''
         self.mask = torch.zeros((50,10,10))
         
-        self.text_encoder = TextEncoder_2(clip_model)
+        self.text_encoder = TextEncoder(clip_model)
+        
+        # Paper's 30 Super Entity Categories (Section B.2, AAAI 2025)
+        RAHP_SUPER_ENTITIES = [
+            'male', 'female', 'children', 'pets', 'wild animal',
+            'ground transport', 'water transport', 'air transport',
+            'sports equipment', 'seating furniture', 'decorative item',
+            'table', 'upper body clothing', 'lower body clothing',
+            'footwear', 'accessory', 'fruit', 'vegetable', 'prepared food',
+            'beverage', 'utensils', 'container', 'textile', 'landscape',
+            'urban feature', 'plant', 'structure', 'household item',
+            'head part', 'limb and appendage'
+        ]
+        
+        # Initialize split index lists BEFORE using them
+        self.relation_aware_split_index = []
+        self.relation_aware_split_index_train = []
+        self.leaf_split_index = []
+        self.leaf_split_index_train = []
+        self.classifier_cache = {}
+        
+        # Generate entity-aware weights
         entity_aware_weight_list = []
         with torch.no_grad():
-            print('build clip text emb tmp')
-            for pred_txt in tqdm(self.rel_classes): # N_p
+            print('Building entity-aware CLIP text embeddings...')
+            for pred_txt in tqdm(self.rel_classes, desc="Entity-aware prompts"):
                 weight_list_rel = []
-                obj_classes = list(VG150_BASE_OBJ_CATEGORIES.keys())
+                obj_classes = RAHP_SUPER_ENTITIES  # Use paper's 30 categories
 
-                for sub_text in obj_classes: # N_p
+                for sub_text in obj_classes:
                     for obj_text in obj_classes:
-                        trp_templete_w, trp_templete_txt  = build_baseline_text_embedding(
-                        f"{sub_text} {pred_txt} {obj_text}", 
+                        trp_templete_w, trp_templete_txt = build_baseline_text_embedding(
+                            f"{sub_text} {pred_txt} {obj_text}", 
                             templates=simple_reduced_templates, text_model=self.text_encoder
                         )
                         trp_templete_w = trp_templete_w / trp_templete_w.norm(dim=-1, keepdim=True)
                         weight_list_rel.append(trp_templete_w)
                 entity_aware_weight_list.append(torch.stack(weight_list_rel))
 
-
-        if cfg.DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH != '':
-            relation_aware_weight_list = torch.load(cfg.DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH)
+        # Load relation-aware weights from cache
+        if cfg.MODEL.DYHEAD.OV.DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH != '':
+            print(f'Loading relation-aware weights from cache: {cfg.MODEL.DYHEAD.OV.DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH}')
+            relation_aware_weight_list = torch.load(cfg.MODEL.DYHEAD.OV.DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH)
+            
+            # Verify cache structure
+            if not isinstance(relation_aware_weight_list, list) or len(relation_aware_weight_list) != len(self.rel_classes):
+                raise ValueError(f"Cache should be a list of {len(self.rel_classes)} tensors, got {type(relation_aware_weight_list)} with length {len(relation_aware_weight_list) if isinstance(relation_aware_weight_list, list) else 'N/A'}")
+            
+            print(f'✓ Cache loaded: {len(relation_aware_weight_list)} predicates')
+            print(f'✓ First predicate shape: {relation_aware_weight_list[0].shape}')
+            print(f'✓ Expected shape: [900, 512] for 30 super-entities')
+            
+            # Build split indices from cache
+            for num_index, pred_weights in enumerate(relation_aware_weight_list):
+                num_entity_pairs = pred_weights.shape[0]  # Should be 900 (30×30)
+                self.relation_aware_split_index.append(num_entity_pairs)
         else:
             raise ValueError("DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH cannot be empty")
 
-
-        self.relation_aware_split_index = []
-        num = 0
-        for cls_i in range(len(self.rel_classes)): # N_p
-            for sub_id, sub_text in enumerate(VG150_BASE_OBJ_CATEGORIES.keys()): # N_p
-                for obj_id, obj_text in enumerate(VG150_BASE_OBJ_CATEGORIES.keys()):
-                    self.relation_aware_split_index_train.append(len(self.relation_aware_split_index[num_index]))
-                    num_index += 1
-
+        # Store weights in classifier cache
         self.classifier_cache = nn.ParameterDict()
-        self.classifier_cache['entity_aware_weight'] = nn.Parameter(torch.stack(entity_aware_weight_list), requires_grad=False) # Num_pred * num_ent^2 * hdim
-        self.classifier_cache['relation_aware_weight'] = nn.Parameter(torch.cat(relation_aware_weight_list, dim=0), requires_grad=False)
+        self.classifier_cache['entity_aware_weight'] = nn.Parameter(
+            torch.stack(entity_aware_weight_list), requires_grad=False
+        )  # Shape: [50, 900, 512]
+        self.classifier_cache['relation_aware_weight'] = nn.Parameter(
+            torch.cat(relation_aware_weight_list, dim=0), requires_grad=False
+        )  # Shape: [45000, 512] = 50 * 900
 
+        print(f'✓ Entity-aware weight shape: {self.classifier_cache["entity_aware_weight"].shape}')
+        print(f'✓ Relation-aware weight shape: {self.classifier_cache["relation_aware_weight"].shape}')
+
+        # Build training splits (exclude zero-shot predicates)
         if self.cfg.MODEL.DYHEAD.OV.ENABLED:
-            relation_aware_weight_list_train = []
-            self.relation_aware_split_index_train = []
             entity_aware_weight_list_train = []
+            relation_aware_weight_list_train = []
 
+            num_index = 0
             for cls_i in range(len(self.rel_classes)):
                 if cls_i not in self.cfg.MODEL.DYHEAD.OV.ZS_PREDICATES:
-                    entity_aware_weight_list_train.append(entity_aware_weight_list_train[cls_i])
+                    # Include this predicate in training
+                    entity_aware_weight_list_train.append(entity_aware_weight_list[cls_i])
+                    relation_aware_weight_list_train.append(relation_aware_weight_list[cls_i])
+                    self.relation_aware_split_index_train.append(self.relation_aware_split_index[cls_i])
 
-            position_weight_train, position_leaf_split_train = [], []
-            num_index = 0
-            for cls_i in range(len(self.rel_classes)): # N_p
-                    if cls_i not in self.cfg.MODEL.DYHEAD.OV.ZS_PREDICATES:
-                        for sub_id, sub_text in enumerate(VG150_BASE_OBJ_CATEGORIES.keys()): # N_p
-                            for obj_id, obj_text in enumerate(VG150_BASE_OBJ_CATEGORIES.keys()):
-                                relation_aware_weight_list_train.append(relation_aware_weight_list[num_index])
-                                self.relation_aware_split_index_train.append(self.relation_aware_split_index[num_index])
-                                num_index += 1
-                    else:
-                        for sub_id, sub_text in enumerate(BASIC_OBJ_CLASS): # N_p
-                            for obj_id, obj_text in enumerate(BASIC_OBJ_CLASS):
-                                num_index += 1
-
-            self.classifier_cache['entity_aware_weight_train'] = nn.Parameter(torch.stack(entity_aware_weight_list_train), requires_grad=False)
-            self.classifier_cache['relation_aware_weight_train'] = nn.Parameter(torch.cat(relation_aware_weight_list_train, dim=0), requires_grad=False)
+            self.classifier_cache['entity_aware_weight_train'] = nn.Parameter(
+                torch.stack(entity_aware_weight_list_train), requires_grad=False
+            )
+            self.classifier_cache['relation_aware_weight_train'] = nn.Parameter(
+                torch.cat(relation_aware_weight_list_train, dim=0), requires_grad=False
+            )
+            
+            print(f'✓ Training splits created:')
+            print(f'  - Entity-aware train shape: {self.classifier_cache["entity_aware_weight_train"].shape}')
+            print(f'  - Relation-aware train shape: {self.classifier_cache["relation_aware_weight_train"].shape}')
+            print(f'  - Zero-shot predicates excluded: {len(self.cfg.MODEL.DYHEAD.OV.ZS_PREDICATES)}')
 
     
     def forward(self, rel_hs, union_features=None, tree_features=None):
@@ -426,25 +467,35 @@ def processed_name(name, rm_dot=False):
     return res
 
 def build_baseline_text_embedding(category, templates=simple_reduced_templates, text_model=None):
-    run_on_gpu = torch.cuda.is_available()
-
-    if run_on_gpu:
-        text_model = text_model.to(torch.device(type='cuda'))
-    texts = [
-        template.format(processed_name(category, rm_dot=True), article=article(category))
-        for template in templates
-    ]
-    texts = clip.tokenize(texts).long()  # tokenize
-    if run_on_gpu:
-        texts = texts.cuda()
+    """
+    Build text embeddings using CLIP text encoder
+    Args:
+        text: The text to embed (e.g., "male riding ground transport")
+        templates: List of prompt templates
+        text_model: TextEncoder instance
+    """
+    from clip import clip
+    
+    # Apply templates
+    texts = [template.format(category) for template in templates]
+    
+    # Tokenize texts
+    tokenized_texts = clip.tokenize(texts).cuda()
+    
+    # Get embeddings from text encoder
+    # TextEncoder.forward expects (prompts, tokenized_prompts)
+    with torch.no_grad():
+        # Create prompt embeddings (normally this would be learned prompts, but we use token embeddings)
+        prompt_embeddings = text_model.transformer.token_embedding(tokenized_texts).type(text_model.dtype)
         
-    text_embeddings = text_model(texts)
-    text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
-    text_embedding = text_embeddings.mean(dim=0)
-    text_embedding /= text_embedding.norm()
-    text_embedding = text_embedding.cpu()
-
-    return text_embedding, texts
+        # Call forward with both arguments
+        text_embeddings = text_model(prompt_embeddings, tokenized_texts)
+    
+    # Average across templates
+    text_embeddings = text_embeddings.mean(dim=0, keepdim=True)
+    text_embeddings = text_embeddings / text_embeddings.norm(dim=-1, keepdim=True)
+    
+    return text_embeddings, texts
 
 def build_simple_text_embedding(category, templates=baseline_templates, text_model=None):
     run_on_gpu = torch.cuda.is_available()

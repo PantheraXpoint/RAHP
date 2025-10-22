@@ -21,6 +21,7 @@ MODEL:
       FEAT_DISTILLATION_MODEL: 'clip'
       DATASET_NAME: 'VG'
       USE_ADAPTER_LAYER: False  # Disable adapter since we're testing
+      DYNAMIC_CLIP_CLASSIFIER_WEIGHT_CACHE_PTH: '/RAHP/MODEL/relation_aware_weight_cache.pth'  # ← Point to your cache
     NUM_CLASSES: 151
     SCORE_AGG: "MEAN"
     RELATION_CONSISTENCY_ON: True
