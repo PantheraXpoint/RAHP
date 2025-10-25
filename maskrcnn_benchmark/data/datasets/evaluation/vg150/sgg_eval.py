@@ -202,12 +202,33 @@ Modified for:
 He, Tao, et al. "Towards Open-vocabulary Scene Graph Generation with Prompt-based Finetuning." ECCV2022.
 """
 class SGZeroShotRecall(SceneGraphEvaluation):
-    def __init__(self, result_dict, unseen_obj_cats, unseen_predicate_cars):
+    def __init__(self, result_dict):
         super(SGZeroShotRecall, self).__init__(result_dict)
         self.novel_count = 0
         self.all_count = 0
-        self.unseen_obj_cats = unseen_obj_cats
-        self.unseen_predicate_cars = unseen_predicate_cars
+        
+        # Define unseen object categories (from RAHP paper)
+        self.unseen_obj_cats = [9, 10, 11, 20, 22, 23, 26, 27, 28, 37, 38, 40, 41, 
+                                45, 52, 53, 54, 57, 58, 60, 61, 64, 66, 74, 78, 87, 
+                                91, 95, 97, 99, 111, 112, 113, 115, 121, 124, 126, 
+                                127, 134, 135, 136, 144, 145, 149, 150]
+        
+        # Define unseen predicates (novel predicates from RAHP paper)
+        # These are 14 novel predicates for zero-shot evaluation
+        self.unseen_predicate_cars = set([1, 2, 6, 9, 11, 17, 18, 20, 22, 24, 25, 27, 30, 31])
+        
+        # Load base pair labels (pairs seen during training)
+        # This is used to distinguish seen vs unseen object pairs
+        base_pair_path = "/RAHP/DATA/vg/base_pair_labels_all.pt"
+        try:
+            self.base_pair_labels_all = torch.load(
+                base_pair_path,
+                map_location=torch.device("cuda")
+            )
+            print(f"✅ Loaded base_pair_labels_all from {base_pair_path}")
+        except FileNotFoundError:
+            print(f"⚠️  {base_pair_path} not found - using empty set (all pairs treated as novel)")
+            self.base_pair_labels_all = set()
 
     def register_container(self, mode):
         self.result_dict[mode + '_zeroshot_recall'] = {20: [], 50: [], 100: []}
@@ -910,8 +931,8 @@ class SGStagewiseRecall(SceneGraphEvaluation):
             ),
         }
 
-        base_triplet_labels_all = torch.load("/public/home/v-liutao/vln/VS3_CVPR23/base_triplet_labels_all.pt")
-        base_pair_labels_all = torch.load("/public/home/v-liutao/vln/VS3_CVPR23/base_pair_labels_all.pt")
+        base_triplet_labels_all = torch.load("/RAHP/DATA/vg/base_triplet_labels_all.pt")
+        base_pair_labels_all = torch.load("/RAHP/DATA/vg/base_pair_labels_all.pt")
         self.base_pair_labels_all = base_pair_labels_all
         self.base_triplet_labels_all = base_triplet_labels_all
         self.relation_per_cls_hit_recall_pair = {

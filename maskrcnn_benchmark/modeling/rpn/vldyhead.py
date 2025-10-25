@@ -1344,12 +1344,32 @@ class VLDyHeadModule(torch.nn.Module):
                 if self.cfg.MODEL.DYHEAD.OV.ENABLED:
                     if pair_reps_refine.size(0) == 0:
                         relation_logits = torch.zeros((0, 51)).to(head_tail_reps.device)
+                        
                     else:
-                        rel_clip_hs = self.clip_linear(pair_reps_refine)  # all_pair_reps_refine: shape: num_pair x 256, rel_clip_hs :shape: num_pair x 512
-                        relation_logits = self.clip_dynamic_classifier(rel_clip_hs)  # bs x 50
+                        # Compute union_features from head_tail_reps
+                        # head_tail_reps has shape: (num_pairs, 2, feature_dim)
+                        # Extract subject (head) and object (tail) features
+                        rel_clip_hs = self.clip_linear(pair_reps_refine)
+                        head_features = head_tail_reps[:, 0, :]  # Subject features
+                        tail_features = head_tail_reps[:, 1, :]  # Object features
+                        
+                        # Create union features by concatenating subject and object
+                        union_features = torch.cat([head_features, tail_features], dim=-1)
+                        
+                        # Pass both rel_clip_hs AND union_features to classifier
+                        relation_logits = self.clip_dynamic_classifier(rel_clip_hs, union_features)  # Shape: (N, 50)
+                        
+                        # FIX: RAHP classifier returns 50 classes, add background for compatibility
+                        if relation_logits.shape[-1] == 50:
+                            background_scores = torch.full(
+                                (relation_logits.shape[0], 1),
+                                float('-inf'),  # Never predict background as a relationship
+                                dtype=relation_logits.dtype,
+                                device=relation_logits.device
+                            )
+                            relation_logits = torch.cat([background_scores, relation_logits], dim=-1)  # Now (N, 51)
                 else:
                     relation_logits = self.relation_semantic_embed(pair_reps_refine) # bs x 51
-
 
                 if self.cfg.MODEL.ROI_RELATION_HEAD.PREDICT_USE_BIAS:
                     relation_logits = relation_logits + self.relation_freq_bias.index_with_labels(obj_labels[pair_ids])

@@ -13,7 +13,7 @@ from torch import nn
 import numpy as np
 from tqdm import tqdm
 
-from ..clip_utils import build_one_text_embedding, build_text_embedding, reduced_templates
+from ..clip_utils import build_one_text_embedding, build_text_embedding, reduced_templates, TextEncoder as TextEncoderFromUtils
 
 # Following "Towards Open-vocabulary Scene Graph Generation with Prompt-based Finetuning"
 VG150_BASE_OBJ_CATEGORIES = {
@@ -47,9 +47,9 @@ def load_categorical_clip_text_embedding(dataset_name):
         with open('/RAHP/DATA/vg/vg_cate_info.json', 'r') as f:
             cate_info = json.load(f)
             obj_classes = cate_info["ent_cate"][:-1]
-            rel_classes = cate_info["pred_cate"][1:]
+            # rel_classes = cate_info["pred_cate"][1:]
             # use predicate background 
-            # rel_classes = cate_info["pred_cate"]
+            rel_classes = cate_info["pred_cate"]
             # zeroshot_w = build_text_embedding(obj_classes, templates=reduced_templates)
             # zeroshot_w = zeroshot_w.cpu()
 
@@ -172,9 +172,9 @@ class CLIPDynamicClassifierSimple(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07), requires_grad=False)
 
         self.tree_type = ''
-        self.mask = torch.zeros((50,10,10))
+        self.mask = torch.zeros((50,30,30))
         
-        self.text_encoder = TextEncoder(clip_model)
+        self.text_encoder = TextEncoder_2(clip_model)
         
         # Paper's 30 Super Entity Categories (Section B.2, AAAI 2025)
         RAHP_SUPER_ENTITIES = [
@@ -225,7 +225,26 @@ class CLIPDynamicClassifierSimple(nn.Module):
             print(f'✓ Cache loaded: {len(relation_aware_weight_list)} predicates')
             print(f'✓ First predicate shape: {relation_aware_weight_list[0].shape}')
             print(f'✓ Expected shape: [900, 512] for 30 super-entities')
-            
+
+            num_super_entities = 30
+            num_predicates = len(self.rel_classes)  # 50
+            total_groups = num_predicates * num_super_entities  # 50 × 30 = 1500
+
+            self.leaf_split_index = [num_super_entities] * total_groups  # [30] * 1500
+            print(f'✓ Generated leaf_split_index: {total_groups} groups of {num_super_entities}')
+            print(f'✓ Total dimensions: {sum(self.leaf_split_index)} (expected: 45000)')
+
+            # Build training split index (only if zero-shot predicates are defined)
+            if self.cfg.MODEL.DYHEAD.OV.ENABLED and hasattr(self.cfg.MODEL.DYHEAD.OV, 'ZS_PREDICATES') and len(self.cfg.MODEL.DYHEAD.OV.ZS_PREDICATES) > 0:
+                num_train_predicates = num_predicates - len(self.cfg.MODEL.DYHEAD.OV.ZS_PREDICATES)
+                total_groups_train = num_train_predicates * num_super_entities
+                self.leaf_split_index_train = [num_super_entities] * total_groups_train
+                print(f'✓ Training split_index: {len(self.leaf_split_index_train)} groups (excluding {len(self.cfg.MODEL.DYHEAD.OV.ZS_PREDICATES)} zero-shot predicates)')
+            else:
+                # Use same as test if no zero-shot predicates
+                self.leaf_split_index_train = self.leaf_split_index
+                print(f'✓ Training split_index: same as test (no zero-shot predicates)')
+
             # Build split indices from cache
             for num_index, pred_weights in enumerate(relation_aware_weight_list):
                 num_entity_pairs = pred_weights.shape[0]  # Should be 900 (30×30)
@@ -271,44 +290,104 @@ class CLIPDynamicClassifierSimple(nn.Module):
             print(f'  - Zero-shot predicates excluded: {len(self.cfg.MODEL.DYHEAD.OV.ZS_PREDICATES)}')
 
     
-    def forward(self, rel_hs, union_features=None, tree_features=None):
-        # classification with embedding by matching
-        inter_hs = rel_hs
-        # cosine distance
-        inter_hs_norm = inter_hs / inter_hs.norm(dim=-1, keepdim=True)
+    def forward(self, rel_hs, union_features=None):
+        """
+        Forward pass for hierarchical relation prediction.
+        
+        Args:
+            rel_hs: Relation features from CLIP encoding
+            union_features: Union box features (subject ∪ object visual features)
+                        Should be provided for full accuracy
+        """
+        # Entity-aware scoring (always available)
+        inter_hs_norm = rel_hs / rel_hs.norm(dim=-1, keepdim=True)
+        
+        # Load appropriate weights for training vs testing
+        if self.training:
+            entity_aware_weight = self.classifier_cache['entity_aware_weight_train'].to(rel_hs.device)
+            cate_split_index = self.leaf_split_index_train
+            if union_features is not None:
+                relation_aware_weight = self.classifier_cache['relation_aware_weight_train'].to(rel_hs.device)
+        else:
+            entity_aware_weight = self.classifier_cache['entity_aware_weight'].to(rel_hs.device)
+            cate_split_index = self.leaf_split_index
+            if union_features is not None:
+                relation_aware_weight = self.classifier_cache['relation_aware_weight'].to(rel_hs.device)
 
-        entity_aware_weight = self.classifier_cache['entity_aware_weight'].to(inter_hs.device)
-        relation_aware_weight = self.classifier_cache['relation_aware_weight'].to(inter_hs.device)
-        cate_split_index = self.leaf_split_index
-        if self.cfg.MODEL.DYHEAD.OV.ENABLED:
-            if self.training:
-                entity_aware_weight = self.classifier_cache['entity_aware_weight_train'].to(inter_hs.device)
-                relation_aware_weight = self.classifier_cache['relation_aware_weight_train'].to(inter_hs.device)
-                cate_split_index = self.leaf_split_index_train
-            else:
-                entity_aware_weight = self.classifier_cache['entity_aware_weight'].to(inter_hs.device)
-                relation_aware_weight = self.classifier_cache['relation_aware_weight'].to(inter_hs.device)
-                cate_split_index = self.leaf_split_index
-
-        # entity-aware prompt scpre
+        # Entity-aware prompt score
         entity_aware_weight = entity_aware_weight / entity_aware_weight.norm(dim=-1, keepdim=True)
-        dis_mat_entity = (inter_hs_norm @ entity_aware_weight.permute(2, 0, 1).reshape(inter_hs_norm.shape[-1], -1)) # num_inst,dim x Num_pred, num_ent, dim => num_inst, Num_pred, num_ent
+        dis_mat_entity = (inter_hs_norm @ entity_aware_weight.permute(2, 0, 1).reshape(inter_hs_norm.shape[-1], -1))
         class_num = entity_aware_weight.shape[0]
         dis_mat_entity = dis_mat_entity.reshape((dis_mat_entity.shape[0], class_num, -1))
-
-        # relation-aware prompt scpre
-        union_features_norm = union_features / union_features.norm(dim=-1, keepdim=True)
-        relation_aware_weight = relation_aware_weight / relation_aware_weight.norm(dim=-1, keepdim=True)
-        dis_mat_relation, _ = self.compute_scores(union_features_norm, relation_aware_weight, cate_split_index, class_num, self.cfg.MODEL.DYHEAD.OV.PROMPT_SELECT_K)
-
-        # final predicate score
-        cls_res = dis_mat_masked.max(-1)[0] * (1 - self.cfg.MODEL.DYHEAD.OV.VLM_BIAS_WEIGHT) + dis_mat_union.max(-1)[0] * self.cfg.MODEL.DYHEAD.OV.VLM_BIAS_WEIGHT# num_inst, Num_pred
-
+        
+        # Apply mask to constrain valid entity-predicate combinations
+        if hasattr(self, 'mask'):
+            mask = self.mask.to(dis_mat_entity.device)
+            # Reshape mask to match dis_mat_entity shape
+            mask_flat = mask.reshape(mask.shape[0], -1)  # (50, 900) or (50, 100)
+            
+            # Only apply if shapes match
+            if mask_flat.shape[-1] == dis_mat_entity.shape[-1]:
+                dis_mat_entity_masked = dis_mat_entity * mask_flat.unsqueeze(0)
+            else:
+                # Shape mismatch - skip masking with warning
+                # (This shouldn't happen after fixing mask initialization)
+                dis_mat_entity_masked = dis_mat_entity
+                if self.training:
+                    print(f"Warning: Mask shape mismatch - expected {dis_mat_entity.shape[-1]}, got {mask_flat.shape[-1]}")
+        else:
+            dis_mat_entity_masked = dis_mat_entity
+        
+        # Compute final score
+        if union_features is not None:
+            # Full hierarchical scoring with relation-aware prompts
+            union_features_norm = union_features / union_features.norm(dim=-1, keepdim=True)
+            relation_aware_weight = relation_aware_weight / relation_aware_weight.norm(dim=-1, keepdim=True)
+            
+            # Compute relation-aware scores using hierarchical structure
+            dis_mat_relation, _ = self.compute_scores(
+                union_features_norm, 
+                relation_aware_weight, 
+                cate_split_index, 
+                class_num, 
+                self.cfg.MODEL.DYHEAD.OV.PROMPT_SELECT_K
+            )
+            
+            # Combine entity-aware and relation-aware scores
+            entity_score = dis_mat_entity_masked.max(-1)[0]
+            relation_score = dis_mat_relation.max(-1)[0]
+            
+            # Weighted combination (weight from config)
+            weight = self.cfg.MODEL.DYHEAD.OV.RELATION_PROMPT_WEIGHT
+            cls_res = entity_score * (1 - weight) + relation_score * weight
+        else:
+            # Fallback: entity-aware scoring only (if union_features not provided)
+            # This path should rarely be taken with proper implementation
+            cls_res = dis_mat_entity_masked.max(-1)[0]
+            if self.training:
+                print("Warning: union_features is None - using entity-aware scoring only")
+        
+        # Apply logit scale
+        cls_res = cls_res * self.logit_scale.exp()
+        
         return cls_res
     
     def compute_scores(self, inter_hs, cate_weights_tree, cate_leaf_split_index, class_num, selct_top_k=3):
+        #normalize inter_hs
+        inter_hs_norm = inter_hs / inter_hs.norm(dim=-1, keepdim=True)
+
+        # FIX: Ensure both tensors have the same dtype
+        cate_weights_tree = cate_weights_tree.to(inter_hs_norm.dtype)
+        
         dis_mat_tree = (inter_hs_norm @ cate_weights_tree.permute(1, 0).reshape(inter_hs_norm.shape[-1], -1)) # num_inst,dim x Num_pred, num_ent, dim => num_inst, Num_pred, num_ent
         dis_mat_tree = dis_mat_tree * self.logit_scale.exp()
+
+        # ADD THIS CHECK:
+        if not cate_leaf_split_index or len(cate_leaf_split_index) == 0:
+            # Fallback: flat scoring
+            num_entities = dis_mat_tree.shape[-1] // class_num
+            dis_mat_tree_sum = dis_mat_tree.reshape(dis_mat_tree.shape[0], class_num, num_entities)
+            return dis_mat_tree_sum, dis_mat_tree
 
         dis_mat_leaf = torch.split(dis_mat_tree, cate_leaf_split_index, dim=-1)
         
@@ -451,9 +530,9 @@ baseline_templates = [
 ]
 
 simple_reduced_templates = [
-    "There is {article} {} in the scene.",
+    "There is {article} {name} in the scene.",
     # "There is the {} in the scene.",
-    "A photo of {article} {} in the scene.",
+    "A photo of {article} {name} in the scene.",
     # "a photo of the {} in the scene.",
     # "a photo of one {} in the scene.",
 ]
@@ -467,51 +546,24 @@ def processed_name(name, rm_dot=False):
     return res
 
 def build_baseline_text_embedding(category, templates=simple_reduced_templates, text_model=None):
-    """
-    Build text embeddings using CLIP text encoder
-    Args:
-        text: The text to embed (e.g., "male riding ground transport")
-        templates: List of prompt templates
-        text_model: TextEncoder instance
-    """
-    from clip import clip
-    
-    # Apply templates
-    texts = [template.format(category) for template in templates]
-    
-    # Tokenize texts
-    tokenized_texts = clip.tokenize(texts).cuda()
-    
-    # Get embeddings from text encoder
-    # TextEncoder.forward expects (prompts, tokenized_prompts)
-    with torch.no_grad():
-        # Create prompt embeddings (normally this would be learned prompts, but we use token embeddings)
-        prompt_embeddings = text_model.transformer.token_embedding(tokenized_texts).type(text_model.dtype)
-        
-        # Call forward with both arguments
-        text_embeddings = text_model(prompt_embeddings, tokenized_texts)
-    
-    # Average across templates
-    text_embeddings = text_embeddings.mean(dim=0, keepdim=True)
-    text_embeddings = text_embeddings / text_embeddings.norm(dim=-1, keepdim=True)
-    
-    return text_embeddings, texts
-
-def build_simple_text_embedding(category, templates=baseline_templates, text_model=None):
+    """Build text embeddings using CLIP text encoder."""
     run_on_gpu = torch.cuda.is_available()
 
     if run_on_gpu:
         text_model = text_model.to(torch.device(type='cuda'))
+    
+    # Format texts using named parameters
     texts = [
-        # template.format(processed_name(category, rm_dot=True), article=article(category))
-        template.format(sub_text=category[0], obj_text=category[1], article1=article(category[0]), article2=article(category[1])) 
+        template.format(name=processed_name(category, rm_dot=True), article=article(category))
         for template in templates
     ]
-
-    texts = clip.tokenize(texts).long()  # tokenize
+    
+    # Tokenize
+    texts = clip.tokenize(texts).long()
     if run_on_gpu:
         texts = texts.cuda()
         
+    # Get embeddings using TextEncoder's forward method
     text_embeddings = text_model(texts)
     text_embeddings /= text_embeddings.norm(dim=-1, keepdim=True)
     text_embedding = text_embeddings.mean(dim=0)

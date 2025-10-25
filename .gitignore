@@ -13,6 +13,9 @@ MODEL/*.bin
 *.ckpt
 *.bin
 
+# Allow specific pth file
+!MODEL/relation_aware_weight_cache.pth
+
 # Python
 __pycache__/
 *.py[cod]
@@ -39,6 +42,9 @@ MANIFEST
 # PyTorch
 *.pth
 *.pt
+
+# Allow specific pth file
+!MODEL/relation_aware_weight_cache.pth
 
 # Jupyter Notebook
 .ipynb_checkpoints
