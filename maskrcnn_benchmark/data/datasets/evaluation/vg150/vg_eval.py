@@ -367,6 +367,30 @@ def evaluate_relation_of_one_image(groundtruth, prediction, global_container, ev
     local_container['pred_classes'] = prediction.get_field('pred_labels').long().detach().cpu().numpy()     # (#pred_objs, )
     local_container['obj_scores'] = prediction.get_field('pred_scores').detach().cpu().numpy()              # (#pred_objs, )
 
+
+    # ========== CRITICAL FIX: Filter out invalid relationship indices ==========
+    num_pred_objs = len(local_container['pred_classes'])
+    pred_rel_inds = local_container['pred_rel_inds']
+
+    # Find valid relationships (both subject and object indices must be within bounds)
+    valid_mask = (pred_rel_inds[:, 0] < num_pred_objs) & (pred_rel_inds[:, 1] < num_pred_objs)
+
+    if not valid_mask.all():
+        num_invalid = (~valid_mask).sum()
+        print(f"⚠️  Warning: Filtered {num_invalid}/{len(pred_rel_inds)} invalid relationships (indices out of bounds)")
+        
+        # Apply the filter to ALL relationship-related fields
+        local_container['pred_rel_inds'] = pred_rel_inds[valid_mask]
+        local_container['rel_scores'] = local_container['rel_scores'][valid_mask]
+        local_container['pred_rel_labels'] = local_container['pred_rel_labels'][valid_mask]
+        local_container['rel_dist'] = local_container['rel_dist'][valid_mask]
+        local_container['rel_cls'] = local_container['rel_cls'][valid_mask]
+        
+        # Filter rel_vec only if it exists
+        if 'rel_vec' in local_container:
+            local_container['rel_vec'] = local_container['rel_vec'][valid_mask]
+    # ========== END OF FIX ==========
+
     # to calculate accuracy, only consider those gt pairs
     # This metric is used by "Graphical Contrastive Losses for Scene Graph Parsing" 
     # for sgcls and predcls
@@ -447,7 +471,7 @@ def evaluate_relation_of_one_image(groundtruth, prediction, global_container, ev
                               pred_rel_pair_idx=prediction.get_field('rel_pair_idxs').long().detach().cpu(),
                               pred_rel_dist=prediction.get_field('pred_rel_scores').detach().cpu())
 
-    return 
+    return
 
 
 
